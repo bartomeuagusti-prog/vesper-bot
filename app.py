@@ -38,7 +38,7 @@ user_history = {}
 
 def get_square_shifts(days=7):
     if not SQUARE_TOKEN:
-        return "No tinc el token de Square configurat."
+        return "ERROR: No tinc el token de Square."
 
     headers = {
         "Authorization": f"Bearer {SQUARE_TOKEN}",
@@ -46,18 +46,18 @@ def get_square_shifts(days=7):
         "Square-Version": "2025-05-21"
     }
 
-    # 1. Obtenir locations
+    # 1. Locations
     loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
     if loc_r.status_code != 200:
-        return f"Error obtenint locations: {loc_r.text[:300]}"
+        return f"Error locations ({loc_r.status_code}): {loc_r.text[:250]}"
 
     locations = loc_r.json().get("locations", [])
     if not locations:
-        return "No he trobat cap ubicació a Square."
+        return "No hi ha locations a Square Sandbox."
 
     location_ids = [loc["id"] for loc in locations]
 
-    # 2. Buscar torns
+    # 2. Torns
     now = datetime.now(timezone.utc)
     start = now.isoformat().replace("+00:00", "Z")
     end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
@@ -69,8 +69,7 @@ def get_square_shifts(days=7):
                 "start": {
                     "start_at": start,
                     "end_at": end
-                },
-                "scheduled_shift_statuses": ["PUBLISHED"]
+                }
             }
         },
         "limit": 50
@@ -79,21 +78,12 @@ def get_square_shifts(days=7):
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
 
     if r.status_code != 200:
-        return f"Error consultant torns: {r.status_code} - {r.text[:400]}"
+        return f"Error torns ({r.status_code}): {r.text[:400]}"
 
-    shifts = r.json().get("scheduled_shifts", [])
-    if not shifts:
-        return "No he trobat cap torn publicat als propers dies a Square (Sandbox)."
-
-    result = ["Torns publicats trobats a Square:"]
-    for s in shifts:
-        details = s.get("published_shift_details") or s.get("draft_shift_details") or {}
-        start_at = details.get("start_at", "")[:16].replace("T", " ")
-        end_at = details.get("end_at", "")[:16].replace("T", " ")
-        team_id = details.get("team_member_id", "Sense assignar")
-        result.append(f"- {start_at} → {end_at} (empleat: {team_id})")
-
-    return "\n".join(result[:15])
+    data = r.json()
+    shifts = data.get("scheduled_shifts", [])
+    
+    return f"Square ha respost OK. He trobat {len(shifts)} torns. Resposta parcial: {str(data)[:300]}"
 
 @app.event("message")
 def handle_dm(event, say, logger):
