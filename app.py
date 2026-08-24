@@ -28,9 +28,8 @@ Ets Vesper, l'assistent de l'equip de la terrassa de l'Ultonia.
 Només respones preguntes sobre horaris, torns, vacances o canvis de torns.
 Respon sempre en català, de forma concisa, clara i amable.
 Quan et demanin torns, utilitza la informació de Square.
-No inventis dades i sobretot respecta la privacitat de qualsevol treballador. 
-Davant de faltes de respecte o abusos, adverteix que el missatge serà notificat al responsable. 
-
+No inventis dades i sobretot respecta la privacitat de qualsevol treballador.
+Davant de faltes de respecte o abusos, adverteix que el missatge serà notificat al responsable.
 FONS DE CONEIXEMENT:
 {KNOWLEDGE_BASE}
 """
@@ -47,7 +46,6 @@ def get_square_shifts(days=7):
         "Square-Version": "2025-05-21"
     }
 
-    # Locations
     loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
     if loc_r.status_code != 200:
         return f"Error locations: {loc_r.text[:200]}"
@@ -58,7 +56,6 @@ def get_square_shifts(days=7):
 
     location_ids = [loc["id"] for loc in locations]
 
-    # Torns
     now = datetime.now(timezone.utc)
     start = now.isoformat().replace("+00:00", "Z")
     end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
@@ -85,9 +82,8 @@ def get_square_shifts(days=7):
     if not shifts:
         return "No he trobat torns programats per als propers dies."
 
-    # Format net
     lines = [f"He trobat {len(shifts)} torns els propers {days} dies:\n"]
-    for s in shifts[:12]:  # mostrem només els 12 primers
+    for s in shifts[:12]:
         details = s.get("published_shift_details") or s.get("draft_shift_details") or {}
         start_at = details.get("start_at", "")[:16].replace("T", " ")
         end_at = details.get("end_at", "")[:16].replace("T", " ")
@@ -96,48 +92,3 @@ def get_square_shifts(days=7):
     if len(shifts) > 12:
         lines.append(f"\n... i {len(shifts)-12} més.")
 
-    return "\n".join(lines)
-@app.event("message")
-def handle_dm(event, say, logger):
-    if event.get("channel_type") != "im":
-        return
-    if event.get("bot_id") or event.get("subtype"):
-        return
-
-    user_id = event["user"]
-    text = event.get("text", "").strip()
-    if not text:
-        return
-
-    if user_id not in user_history:
-        user_history[user_id] = []
-    user_history[user_id].append({"role": "user", "content": text})
-    user_history[user_id] = user_history[user_id][-12:]
-
-    lower = text.lower()
-    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
-        # Resposta directa temporal per veure què retorna Square
-        result = get_square_shifts()
-        say(result)
-        return
-
-    try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
-
-        response = client.chat.completions.create(
-            model="grok-4.6",
-            messages=messages,
-            temperature=0.2
-        )
-
-        answer = response.choices[0].message.content
-        user_history[user_id].append({"role": "assistant", "content": answer})
-        say(answer)
-
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        say("Ho sento jefe, he tingut un problema tècnic. Prova-ho de nou d'aquí uns minuts.")
-        
-if __name__ == "__main__":
-    handler = SocketModeHandler(app, os.environ.get("SLACK_APP_TOKEN"))
-    handler.start()
