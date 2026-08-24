@@ -24,11 +24,12 @@ INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
 """
 
 SYSTEM_PROMPT = f"""
-Ets Vesper, l'assistent intern del restaurant.
-Només respones preguntes sobre horaris, torns, vacances o canvis.
+Ets Vesper, l'assistent de l'equip de la terrassa de l'Ultonia.
+Només respones preguntes sobre horaris, torns, vacances o canvis de torns.
 Respon sempre en català, de forma concisa, clara i amable.
 Quan et demanin torns, utilitza la informació de Square.
-No inventis dades i sobretot respecta la privacitat de qualsevol treballador. Davant de faltes de respecte o abusos, adverteix que el missatge serà notificat al responsable. 
+No inventis dades i sobretot respecta la privacitat de qualsevol treballador. 
+Davant de faltes de respecte o abusos, adverteix que el missatge serà notificat al responsable. 
 
 FONS DE CONEIXEMENT:
 {KNOWLEDGE_BASE}
@@ -38,7 +39,7 @@ user_history = {}
 
 def get_square_shifts(days=7):
     if not SQUARE_TOKEN:
-        return "ERROR: No tinc el token de Square."
+        return "No tinc el token de Square configurat."
 
     headers = {
         "Authorization": f"Bearer {SQUARE_TOKEN}",
@@ -46,18 +47,18 @@ def get_square_shifts(days=7):
         "Square-Version": "2025-05-21"
     }
 
-    # 1. Locations
+    # Locations
     loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
     if loc_r.status_code != 200:
-        return f"Error locations ({loc_r.status_code}): {loc_r.text[:250]}"
+        return f"Error locations: {loc_r.text[:200]}"
 
     locations = loc_r.json().get("locations", [])
     if not locations:
-        return "No hi ha locations a Square Sandbox."
+        return "No he trobat ubicacions."
 
     location_ids = [loc["id"] for loc in locations]
 
-    # 2. Torns
+    # Torns
     now = datetime.now(timezone.utc)
     start = now.isoformat().replace("+00:00", "Z")
     end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
@@ -78,13 +79,24 @@ def get_square_shifts(days=7):
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
 
     if r.status_code != 200:
-        return f"Error torns ({r.status_code}): {r.text[:400]}"
+        return f"Error consultant torns: {r.status_code}"
 
-    data = r.json()
-    shifts = data.get("scheduled_shifts", [])
-    
-    return f"Square ha respost OK. He trobat {len(shifts)} torns. Resposta parcial: {str(data)[:300]}"
+    shifts = r.json().get("scheduled_shifts", [])
+    if not shifts:
+        return "No he trobat torns programats per als propers dies."
 
+    # Format net
+    lines = [f"He trobat {len(shifts)} torns els propers {days} dies:\n"]
+    for s in shifts[:12]:  # mostrem només els 12 primers
+        details = s.get("published_shift_details") or s.get("draft_shift_details") or {}
+        start_at = details.get("start_at", "")[:16].replace("T", " ")
+        end_at = details.get("end_at", "")[:16].replace("T", " ")
+        lines.append(f"• {start_at} → {end_at}")
+
+    if len(shifts) > 12:
+        lines.append(f"\n... i {len(shifts)-12} més.")
+
+    return "\n".join(lines)
 @app.event("message")
 def handle_dm(event, say, logger):
     if event.get("channel_type") != "im":
