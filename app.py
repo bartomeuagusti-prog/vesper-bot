@@ -102,15 +102,15 @@ def handle_dm(event, say, logger):
     user_history[user_id].append({"role": "user", "content": text})
     user_history[user_id] = user_history[user_id][-12:]
 
-     lower = text.lower()
+    lower = text.lower()
     if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
-        # Resposta directa temporal per veure què retorna Square de veritat
+        # Resposta directa temporal per veure què retorna Square
         result = get_square_shifts()
         say(result)
         return
 
     try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + square_info}] + user_history[user_id]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
 
         response = client.chat.completions.create(
             model="grok-4.6",
@@ -124,8 +124,8 @@ def handle_dm(event, say, logger):
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        say("Ho sento, he tingut un problema tècnic. Prova-ho de nou d'aquí uns minuts.")
-
+        say("Ho sento jefe, he tingut un problema tècnic. Prova-ho de nou d'aquí uns minuts.")
+        
 if __name__ == "__main__":
     handler = SocketModeHandler(app, os.environ.get("SLACK_APP_TOKEN"))
     handler.start()
