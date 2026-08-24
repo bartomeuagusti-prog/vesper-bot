@@ -92,3 +92,147 @@ def get_square_shifts(days=7):
     if len(shifts) > 12:
         lines.append(f"\n... i {len(shifts)-12} més.")
 
+    return "\n".join(lines)
+
+def update_inma_shift():
+    """Avança 30 minuts l'entrada del torn d'Inma Martin del 26/08/2026 (prova)"""
+    if not SQUARE_TOKEN:
+        return "No tinc el token de Square configurat."
+
+    headers = {
+        "Authorization": f"Bearer {SQUARE_TOKEN}",
+        "Content-Type": "application/json",
+        "Square-Version": "2025-05-21"
+    }
+
+    # 1. Buscar Inma Martin
+    search_body = {"query": {"filter": {"status": "ACTIVE"}}}
+    r = requests.post(f"{SQUARE_BASE}/team-members/search", headers=headers, json=search_body)
+    if r.status_code != 200:
+        return f"Error buscant empleats: {r.text[:250]}"
+
+    team_member_id = None
+    for m in r.json().get("team_members", []):
+        full_name = f"{m.get('given_name', '')} {m.get('family_name', '')}".strip().lower()
+        if "inma" in full_name and "martin" in full_name:
+            team_member_id = m["id"]
+            break
+
+    if not team_member_id:
+        return "No he trobat l'empleada Inma Martin."
+
+    # 2. Buscar el torn del 26/08
+    body = {
+        "query": {
+            "filter": {
+                "team_member_ids": [team_member_id],
+                "start": {
+                    "start_at": "2026-08-26T00:00:00+02:00",
+                    "end_at": "2026-08-26T23:59:59+02:00"
+                }
+            }
+        },
+        "limit": 10
+    }
+
+    r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
+    if r.status_code != 200:
+        return f"Error buscant el torn: {r.text[:250]}"
+
+    shifts = r.json().get("scheduled_shifts", [])
+    if not shifts:
+        return "No he trobat cap torn d'Inma Martin el dia 26/08/2026."
+
+    shift = shifts[0]
+    shift_id = shift["id"]
+    details = shift.get("published_shift_details") or shift.get("draft_shift_details") or {}
+    
+    old_start = details.get("start_at")
+    old_end = details.get("end_at")
+    version = details.get("version", 1)
+
+    if not old_start:
+        return "El torn no té hora d'inici."
+
+    # 3. Avançar 30 minuts
+    old_dt = datetime.fromisoformat(old_start)
+    new_dt = old_dt - timedelta(minutes=30)
+    new_start = new_dt.isoformat()
+
+    # 4. Actualitzar
+    update_body = {
+        "scheduled_shift": {
+            "draft_shift_details": {
+                "team_member_id": team_member_id,
+                "location_id": details.get("location_id"),
+                "job_id": details.get("job_id"),
+                "start_at": new_start,
+                "end_at": old_end,
+                "version": version
+            }
+        }
+    }
+
+    r = requests.put(
+        f"{SQUARE_BASE}/labor/scheduled-shifts/{shift_id}",
+        headers=headers,
+        json=update_body
+    )
+
+    if r.status_code in [200, 201]:
+        return (
+            f"Fet! He avançat 30 minuts l'entrada d'Inma Martin el 26/08.\n"
+            f"Abans: {old_start}\n"
+            f"Ara:   {new_start}"
+        )
+    else:
+        return f"Error actualitzant el torn: {r.status_code}\n{r.text[:300]}"
+
+@app.event("message")
+def handle_dm(event, say, logger):
+    if event.get("channel_type") != "im":
+        return
+    if event.get("bot_id") or event.get("subtype"):
+        return
+
+    user_id = event["user"]
+    text = event.get("text", "").strip()
+    if not text:
+        return
+
+    if user_id not in user_history:
+        user_history[user_id] = []
+    user_history[user_id].append({"role": "user", "content": text})
+    user_history[user_id] = user_history[user_id][-12:]
+
+    lower = text.lower()
+
+    # Prova específica: avançar torn d'Inma
+    if "avançar" in lower and "inma" in lower:
+        result = update_inma_shift()
+        say(result)
+        return
+
+    # Consulta normal de torns
+    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
+        result = get_square_shifts()
+        say(result)
+        return
+
+    try:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
+        response = client.chat.completions.create(
+            model="grok-4.6",
+            messages=messages,
+            temperature=0.2
+        )
+        answer = response.choices[0].message.content
+        user_history[user_id].append({"role": "assistant", "content": answer})
+        say(answer)
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        say("Ho sento, he tingut un problema tècnic. Prova-ho de nou d'aquí uns minuts.")
+
+if __name__ == "__main__":
+    handler = SocketModeHandler(app, os.environ.get("SLACK_APP_TOKEN"))
+    handler.start()
