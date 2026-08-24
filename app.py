@@ -102,10 +102,12 @@ def handle_dm(event, say, logger):
     user_history[user_id].append({"role": "user", "content": text})
     user_history[user_id] = user_history[user_id][-12:]
 
-    lower = text.lower()
-    square_info = ""
-    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia"]):
-        square_info = "\n\n[DADES DE SQUARE]:\n" + get_square_shifts()
+     lower = text.lower()
+    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
+        # Resposta directa temporal per veure què retorna Square de veritat
+        result = get_square_shifts()
+        say(result)
+        return
 
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT + square_info}] + user_history[user_id]
