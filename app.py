@@ -24,28 +24,33 @@ INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
 """
 
 SYSTEM_PROMPT = f"""
-Ets Vesper, l'assistent de l'equip de la terrassa de l'Ultonia.
+Ets Vesper, l'assistent de l'equip de la terrassa de l'Ultonia. 
+És només d'ús intern. És un agent professional i tracta assumptes formals de feina. No emojis ni sobre-exclamacions.
 Només respones preguntes sobre horaris, torns, vacances o canvis de torns.
-Respon sempre en català, de forma concisa, clara i amable.
+Respon sempre en català, de forma concisa, clara i amable. 
 Quan et demanin torns, utilitza la informació de Square.
-No inventis dades i sobretot respecta la privacitat de qualsevol treballador.
-Davant de faltes de respecte o abusos, adverteix que el missatge serà notificat al responsable.
+No inventis dades i respecta la privacitat dels treballadors.
+Davant de faltes de respecte o comentaris inapropiats, adverteix que el missatge serà notificat al responsable. 
+
 FONS DE CONEIXEMENT:
 {KNOWLEDGE_BASE}
 """
 
 user_history = {}
+pending_changes = {}  # Guardem canvis pendents de confirmació per usuari
 
-def get_square_shifts(days=7):
-    if not SQUARE_TOKEN:
-        return "No tinc el token de Square configurat."
-
-    headers = {
+def get_headers():
+    return {
         "Authorization": f"Bearer {SQUARE_TOKEN}",
         "Content-Type": "application/json",
         "Square-Version": "2025-05-21"
     }
 
+def get_square_shifts(days=7):
+    if not SQUARE_TOKEN:
+        return "No tinc el token de Square configurat."
+
+    headers = get_headers()
     loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
     if loc_r.status_code != 200:
         return f"Error locations: {loc_r.text[:200]}"
@@ -55,7 +60,6 @@ def get_square_shifts(days=7):
         return "No he trobat ubicacions."
 
     location_ids = [loc["id"] for loc in locations]
-
     now = datetime.now(timezone.utc)
     start = now.isoformat().replace("+00:00", "Z")
     end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
@@ -64,17 +68,13 @@ def get_square_shifts(days=7):
         "query": {
             "filter": {
                 "location_ids": location_ids,
-                "start": {
-                    "start_at": start,
-                    "end_at": end
-                }
+                "start": {"start_at": start, "end_at": end}
             }
         },
         "limit": 50
     }
 
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
-
     if r.status_code != 200:
         return f"Error consultant torns: {r.status_code}"
 
@@ -91,102 +91,107 @@ def get_square_shifts(days=7):
 
     if len(shifts) > 12:
         lines.append(f"\n... i {len(shifts)-12} més.")
-
     return "\n".join(lines)
 
-def update_inma_shift():
-    """Avança 30 minuts l'entrada del torn d'Inma Martin del 26/08/2026 (prova)"""
-    if not SQUARE_TOKEN:
-        return "No tinc el token de Square configurat."
-
-    headers = {
-        "Authorization": f"Bearer {SQUARE_TOKEN}",
-        "Content-Type": "application/json",
-        "Square-Version": "2025-05-21"
-    }
-
-    # 1. Buscar Inma Martin
-    search_body = {"query": {"filter": {"status": "ACTIVE"}}}
-    r = requests.post(f"{SQUARE_BASE}/team-members/search", headers=headers, json=search_body)
+def find_team_member(name):
+    headers = get_headers()
+    r = requests.post(f"{SQUARE_BASE}/team-members/search", headers=headers, json={"query": {"filter": {"status": "ACTIVE"}}})
     if r.status_code != 200:
-        return f"Error buscant empleats: {r.text[:250]}"
+        return None, f"Error buscant empleats: {r.text[:200]}"
 
-    team_member_id = None
+    name_lower = name.lower()
     for m in r.json().get("team_members", []):
-        full_name = f"{m.get('given_name', '')} {m.get('family_name', '')}".strip().lower()
-        if "inma" in full_name and "martin" in full_name:
-            team_member_id = m["id"]
-            break
+        full = f"{m.get('given_name', '')} {m.get('family_name', '')}".strip().lower()
+        if name_lower in full:
+            return m["id"], None
+    return None, f"No he trobat l'empleat/da '{name}'"
 
-    if not team_member_id:
-        return "No he trobat l'empleada Inma Martin."
+def propose_shift_change(team_member_name, date_str, minutes_delta):
+    """Prepara un canvi i el guarda pendent de confirmació. Conserva job_id (color)."""
+    team_member_id, err = find_team_member(team_member_name)
+    if err:
+        return err
 
-    # 2. Buscar el torn del 26/08
+    headers = get_headers()
     body = {
         "query": {
             "filter": {
                 "team_member_ids": [team_member_id],
                 "start": {
-                    "start_at": "2026-08-26T00:00:00+02:00",
-                    "end_at": "2026-08-26T23:59:59+02:00"
+                    "start_at": f"{date_str}T00:00:00+02:00",
+                    "end_at": f"{date_str}T23:59:59+02:00"
                 }
             }
         },
-        "limit": 10
+        "limit": 5
     }
 
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
     if r.status_code != 200:
-        return f"Error buscant el torn: {r.text[:250]}"
+        return f"Error buscant el torn: {r.text[:200]}"
 
     shifts = r.json().get("scheduled_shifts", [])
     if not shifts:
-        return "No he trobat cap torn d'Inma Martin el dia 26/08/2026."
+        return f"No he trobat cap torn de {team_member_name} el dia {date_str}."
 
     shift = shifts[0]
-    shift_id = shift["id"]
     details = shift.get("published_shift_details") or shift.get("draft_shift_details") or {}
-    
     old_start = details.get("start_at")
     old_end = details.get("end_at")
-    version = details.get("version", 1)
 
     if not old_start:
         return "El torn no té hora d'inici."
 
-    # 3. Avançar 30 minuts
     old_dt = datetime.fromisoformat(old_start)
-    new_dt = old_dt - timedelta(minutes=30)
+    new_dt = old_dt + timedelta(minutes=minutes_delta)
     new_start = new_dt.isoformat()
 
-    # 4. Actualitzar
+    # Guardem el canvi pendent (conservem job_id i location_id → color intacte)
+    return {
+        "shift_id": shift["id"],
+        "team_member_id": team_member_id,
+        "location_id": details.get("location_id"),
+        "job_id": details.get("job_id"),  # Important: conservem el job_id = color
+        "old_start": old_start,
+        "new_start": new_start,
+        "old_end": old_end,
+        "version": details.get("version", 1),
+        "name": team_member_name,
+        "date": date_str
+    }
+
+def apply_pending_change(change):
+    """Aplica el canvi conservant el job_id (color)"""
+    headers = get_headers()
     update_body = {
         "scheduled_shift": {
             "draft_shift_details": {
-                "team_member_id": team_member_id,
-                "location_id": details.get("location_id"),
-                "job_id": details.get("job_id"),
-                "start_at": new_start,
-                "end_at": old_end,
-                "version": version
+                "team_member_id": change["team_member_id"],
+                "location_id": change["location_id"],
+                "job_id": change["job_id"],  # ← color es manté
+                "start_at": change["new_start"],
+                "end_at": change["old_end"],
+                "version": change["version"]
             }
         }
     }
 
     r = requests.put(
-        f"{SQUARE_BASE}/labor/scheduled-shifts/{shift_id}",
+        f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}",
         headers=headers,
         json=update_body
     )
 
     if r.status_code in [200, 201]:
         return (
-            f"Fet! He avançat 30 minuts l'entrada d'Inma Martin el 26/08.\n"
-            f"Abans: {old_start}\n"
-            f"Ara:   {new_start}"
+            f"✅ Canvi aplicat correctament.\n"
+            f"{change['name']} – {change['date']}\n"
+            f"Abans: {change['old_start'][11:16]}\n"
+            f"Ara:   {change['new_start'][11:16]}\n"
+            f"(El color del rol s'ha mantingut)"
         )
     else:
-        return f"Error actualitzant el torn: {r.status_code}\n{r.text[:300]}"
+        return f"Error aplicant el canvi: {r.status_code}\n{r.text[:300]}"
 
 @app.event("message")
 def handle_dm(event, say, logger):
@@ -207,18 +212,30 @@ def handle_dm(event, say, logger):
 
     lower = text.lower()
 
-    # Prova específica Inma Martin
-    if "inma" in lower and ("avançar" in lower or "canviar" in lower or "modificar" in lower or "30" in lower):
-        result = update_inma_shift()
+    # Confirmació de canvi pendent
+    if user_id in pending_changes and any(w in lower for w in ["sí", "si", "confirma", "d'acord", "ok", "aplica"]):
+        result = apply_pending_change(pending_changes[user_id])
+        del pending_changes[user_id]
         say(result)
         return
 
-    # Consulta normal de torns
+    if user_id in pending_changes and any(w in lower for w in ["no", "cancel·la", "cancela"]):
+        del pending_changes[user_id]
+        say("Canvi cancel·lat.")
+        return
+
+    # Detecció simple de petició de canvi (exemples: "avança 30 minuts el torn d'Inma del 26")
+    if any(w in lower for w in ["avançar", "avança", "canviar", "modificar", "endreçar"]) and any(c.isdigit() for c in text):
+        # De moment deixem que Grok interpreti i proposi
+        pass
+
+    # Consulta de torns
     if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
         result = get_square_shifts()
         say(result)
         return
 
+    # Resposta normal amb Grok
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
         response = client.chat.completions.create(
