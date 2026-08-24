@@ -13,7 +13,7 @@ client = OpenAI(
 )
 
 SQUARE_TOKEN = os.environ.get("SQUARE_ACCESS_TOKEN")
-SQUARE_BASE = "https://connect.squareupsandbox.com/v2"
+SQUARE_BASE = "https://connect.squareup.com/v2"
 
 KNOWLEDGE_BASE = """
 INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
