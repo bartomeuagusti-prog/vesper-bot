@@ -207,11 +207,11 @@ def handle_dm(event, say, logger):
 
     lower = text.lower()
 
-    # Prova específica: avançar torn d'Inma
-     if "inma" in lower and ("avançar" in lower or "canviar" in lower or "modificar" in lower or "30" in lower):
-         result = update_inma_shift()
-         say(result)
-         return
+    # Prova específica Inma Martin
+    if "inma" in lower and ("avançar" in lower or "canviar" in lower or "modificar" in lower or "30" in lower):
+        result = update_inma_shift()
+        say(result)
+        return
 
     # Consulta normal de torns
     if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
