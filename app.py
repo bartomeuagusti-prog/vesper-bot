@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from openai import OpenAI
@@ -13,7 +13,7 @@ client = OpenAI(
 )
 
 SQUARE_TOKEN = os.environ.get("SQUARE_ACCESS_TOKEN")
-SQUARE_BASE = "https://connect.squareupsandbox.com/v2"  # Sandbox
+SQUARE_BASE = "https://connect.squareupsandbox.com/v2"
 
 KNOWLEDGE_BASE = """
 INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
@@ -24,10 +24,10 @@ INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
 """
 
 SYSTEM_PROMPT = f"""
-Ets Vesper, l'assistent a l'equip de la terrassa de l'Ultonia. 
-Només respones preguntes sobre horaris, torns, vacances i registre laboral. No sobre augments de sou, cobraments o augments (si ho fan dirigeix-los al manager). 
-Respon sempre en català, de forma concisa, clara i amable.
-Si et pregunten el seu torn personal, demana el nom complet del treballador i després consulta Square.
+Ets Vesper, l'assistent intern del restaurant.
+Només respones preguntes sobre horaris, torns, vacances, nòmines i contractes.
+Respon sempre en català, de forma clara i amable.
+Quan et demanin torns, utilitza la informació de Square que et passo.
 No inventis dades.
 
 FONS DE CONEIXEMENT:
@@ -36,10 +36,9 @@ FONS DE CONEIXEMENT:
 
 user_history = {}
 
-def get_square_shifts(team_member_name=None, days=7):
-    """Consulta torns a Square (versió simple)"""
+def get_square_shifts(days=7):
     if not SQUARE_TOKEN:
-        return "No tinc connexió amb Square configurada."
+        return "No tinc el token de Square configurat."
 
     headers = {
         "Authorization": f"Bearer {SQUARE_TOKEN}",
@@ -47,32 +46,26 @@ def get_square_shifts(team_member_name=None, days=7):
         "Square-Version": "2025-05-21"
     }
 
-    # Primer busquem el team member per nom (si ens el donen)
-    team_member_id = None
-    if team_member_name:
-        search_body = {
-            "query": {
-                "filter": {
-                    "status": "ACTIVE"
-                }
-            }
-        }
-        r = requests.post(f"{SQUARE_BASE}/team-members/search", headers=headers, json=search_body)
-        if r.status_code == 200:
-            members = r.json().get("team_members", [])
-            for m in members:
-                full_name = f"{m.get('given_name', '')} {m.get('family_name', '')}".strip().lower()
-                if team_member_name.lower() in full_name:
-                    team_member_id = m["id"]
-                    break
+    # 1. Obtenir locations
+    loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
+    if loc_r.status_code != 200:
+        return f"Error obtenint locations: {loc_r.text[:300]}"
 
-    # Busquem torns dels propers dies
-    start = datetime.utcnow().isoformat() + "Z"
-    end = (datetime.utcnow() + timedelta(days=days)).isoformat() + "Z"
+    locations = loc_r.json().get("locations", [])
+    if not locations:
+        return "No he trobat cap ubicació a Square."
+
+    location_ids = [loc["id"] for loc in locations]
+
+    # 2. Buscar torns
+    now = datetime.now(timezone.utc)
+    start = now.isoformat().replace("+00:00", "Z")
+    end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
 
     body = {
         "query": {
             "filter": {
+                "location_ids": location_ids,
                 "start": {
                     "start_at": start,
                     "end_at": end
@@ -83,26 +76,24 @@ def get_square_shifts(team_member_name=None, days=7):
         "limit": 50
     }
 
-    if team_member_id:
-        body["query"]["filter"]["team_member_ids"] = [team_member_id]
-
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
 
     if r.status_code != 200:
-        return f"Error consultant Square: {r.text[:200]}"
+        return f"Error consultant torns: {r.status_code} - {r.text[:400]}"
 
     shifts = r.json().get("scheduled_shifts", [])
     if not shifts:
-        return "No he trobat torns publicats per als propers dies."
+        return "No he trobat cap torn publicat als propers dies a Square (Sandbox)."
 
-    result = []
+    result = ["Torns publicats trobats a Square:"]
     for s in shifts:
         details = s.get("published_shift_details") or s.get("draft_shift_details") or {}
         start_at = details.get("start_at", "")[:16].replace("T", " ")
         end_at = details.get("end_at", "")[:16].replace("T", " ")
-        result.append(f"- {start_at} → {end_at}")
+        team_id = details.get("team_member_id", "Sense assignar")
+        result.append(f"- {start_at} → {end_at} (empleat: {team_id})")
 
-    return "Torns trobats:\n" + "\n".join(result[:10])
+    return "\n".join(result[:15])
 
 @app.event("message")
 def handle_dm(event, say, logger):
@@ -121,12 +112,10 @@ def handle_dm(event, say, logger):
     user_history[user_id].append({"role": "user", "content": text})
     user_history[user_id] = user_history[user_id][-12:]
 
-    # Si parla de torns personals, intentem consultar Square
     lower = text.lower()
     square_info = ""
-    if any(word in lower for word in ["torn", "horari", "quin dia treballo", "quan treballo"]):
-        # Busquem si ha dit un nom
-        square_info = "\n\n[Informació de Square]:\n" + get_square_shifts()
+    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia"]):
+        square_info = "\n\n[DADES DE SQUARE]:\n" + get_square_shifts()
 
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT + square_info}] + user_history[user_id]
@@ -134,7 +123,7 @@ def handle_dm(event, say, logger):
         response = client.chat.completions.create(
             model="grok-4.6",
             messages=messages,
-            temperature=0.3
+            temperature=0.2
         )
 
         answer = response.choices[0].message.content
