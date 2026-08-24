@@ -10,7 +10,21 @@ client = OpenAI(
     base_url="https://api.x.ai/v1"
 )
 
-SYSTEM_PROMPT = """
+# === FONS DE CONEIXEMENT DEL RESTAURANT ===
+# Aquí pots anar afegint tota la informació important
+KNOWLEDGE_BASE = """
+INFORMACIÓ IMPORTANT DEL RESTAURANT:
+
+- Vacances: Els treballadors tenen dret a 30 dies naturals de vacances a l'any.
+- Canvi de torn: Cal avisar amb un mínim de 48 hores d'antelació i ha d'estar aprovat pel responsable.
+- Nòmines: Es paguen el dia 1 de cada mes.
+- Contractes: Tots els contractes són indefinits llevat que s'indiqui el contrari.
+- Horaris: Els torns normals són de 10:00 a 16:00 i de 16:00 a 22:00.
+
+(Pots anar afegint més informació aquí quan vulguis)
+"""
+
+SYSTEM_PROMPT = f"""
 Ets Vesper, l'assistent intern del restaurant.
 Només respones preguntes sobre:
 - Horaris i torns
@@ -21,9 +35,13 @@ Només respones preguntes sobre:
 Respon sempre en català, de forma clara, amable i professional.
 Si et pregunten alguna cosa fora d'aquests temes, digues educadament que només pots ajudar amb temes de personal i horaris.
 No inventis informació. Si no tens la dada exacta, digues-ho clarament.
-Mantén el context de la conversa.
+Utilitza sempre la informació del fons de coneixement quan sigui rellevant.
+
+FONS DE CONEIXEMENT:
+{KNOWLEDGE_BASE}
 """
 
+# Memòria per usuari (ara més llarga)
 user_history = {}
 
 @app.event("message")
@@ -42,7 +60,8 @@ def handle_dm(event, say, logger):
         user_history[user_id] = []
     
     user_history[user_id].append({"role": "user", "content": text})
-    user_history[user_id] = user_history[user_id][-8:]
+    # Guarda els últims 12 missatges (més memòria)
+    user_history[user_id] = user_history[user_id][-12:]
 
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
