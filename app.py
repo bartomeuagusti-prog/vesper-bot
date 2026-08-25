@@ -213,20 +213,20 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
 def apply_and_publish(change):
     headers = get_headers()
 
-    # Seguretat: el job_id és obligatori per conservar el color
+    # Seguretat: job_id obligatori per conservar el color
     if not change.get("job_id"):
         return (
             "No puc aplicar el canvi perquè el torn no té job_id (rol).\n"
-            "Sense job_id es perdria el color. Escalo a l'encarregat."
+            "Sense això es perdria el color. Escalo a l'encarregat."
         )
 
-    # 1. Actualitzar el draft (sempre amb el job_id original)
+    # 1. Actualitzar el draft
     update_body = {
         "scheduled_shift": {
             "draft_shift_details": {
                 "team_member_id": change["team_member_id"],
                 "location_id": change["location_id"],
-                "job_id": change["job_id"],          # ← sempre es conserva
+                "job_id": change["job_id"],
                 "start_at": change["new_start"],
                 "end_at": change["new_end"],
                 "version": change["version"]
@@ -235,40 +235,7 @@ def apply_and_publish(change):
     }
 
     r = requests.put(
-        f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}",
-        headers=headers,
-        json=update_body
-    )
 
-    if r.status_code not in [200, 201]:
-        return f"Error actualitzant el torn: {r.status_code}\n{r.text[:300]}"
-
-    # 2. Publicar
-    import uuid
-    pub_body = {
-        "idempotency_key": str(uuid.uuid4()),
-        "version": change.get("version")
-    }
-
-    pub_r = requests.post(
-        f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}/publish",
-        headers=headers,
-        json=pub_body
-    )
-
-    if pub_r.status_code not in [200, 201]:
-        return (
-            f"He actualitzat el torn però no l'he pogut publicar (error {pub_r.status_code}).\n"
-            f"El job_id s'ha conservat: {change['job_id']}"
-        )
-
-    return (
-        f"✅ Canvi aplicat i publicat.\n\n"
-        f"**{change['name']}** – {change['date']}\n"
-        f"Abans: {change['old_start'][11:16]} → {change['old_end'][11:16]}\n"
-        f"Ara:   {change['new_start'][11:16]} → {change['new_end'][11:16]}\n"
-        f"job_id conservat: {change['job_id']} (color intacte)"
-    )
 @app.event("message")
 def handle_dm(event, say, logger):
     if event.get("channel_type") != "im":
