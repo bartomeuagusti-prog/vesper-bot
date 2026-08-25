@@ -245,7 +245,6 @@ def apply_and_publish(change):
         headers=headers,
         json=pub_body
     )
-    )
     if pub_r.status_code not in [200, 201]:
         return f"He actualitzat el torn però no l'he pogut publicar (error {pub_r.status_code})."
 
