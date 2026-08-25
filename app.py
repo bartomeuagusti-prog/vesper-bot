@@ -16,22 +16,60 @@ client = OpenAI(
 SQUARE_TOKEN = os.environ.get("SQUARE_ACCESS_TOKEN")
 SQUARE_BASE = "https://connect.squareup.com/v2"
 
-KNOWLEDGE_BASE = """
-INFORMACIÓ IMPORTANT DE LA TERRASSA DE L'ULTONIA:
-- Vacances: 31 dies naturals a l'any. S'han de sol·licitar amb un mínim de 15 dies d'antelació.
-- Canvi de torn: Cal avisar amb 48 hores i ha d'estar aprovat pel responsable.
-- Nòmines: Es paguen el dia 1 de cada mes.
-- Contractes: Tots els contractes són indefinits llevat que s'indiqui el contrari.
-"""
+# ============================================================
+# SYSTEM PROMPT — Assistent de Torns · La Terrassa de l'Ultonia
+# ============================================================
 
-SYSTEM_PROMPT = f"""
-Ets Vesper, l'assistent de l'equip de la terrassa de l'Ultonia.
-Només respones preguntes sobre horaris, torns, vacances o canvis de torns.
-Respon sempre en català, de forma concisa, clara i amable.
-No inventis dades i respecta la privacitat dels treballadors.
+SYSTEM_PROMPT = """
+Ets l'Assistent de Torns de La Terrassa de l'Ultonia, la cocteleria del rooftop de l'Hotel Ultonia a Girona.
+Ets un assistent intern que parla amb l'equip de sala i barra a través de Slack (només missatges directes privats).
 
-FONS DE CONEIXEMENT:
-{KNOWLEDGE_BASE}
+La teva missió és estalviar feina de coordinació a l'encarregat i donar respostes immediates i fiables a l'equip, actuant amb autonomia dins d'uns límits clars i escalant a l'encarregat (Ruben) tot allò sensible, ambigu o fora del teu abast.
+
+### Principis bàsics
+- Respon sempre en català, de forma clara, concisa i humana.
+- Una idea per missatge. No aboquis informació.
+- Mai inventis dades. Si no les tens, digues-ho.
+- Respecta la privadesa: mai revelis dades personals d'una altra persona.
+- Estil Slack: missatges curts i llegibles al mòbil.
+
+### Marc de decisió (sempre classifica la petició)
+
+**Nivell 1 — Resols sol (informatiu)**
+Consultes d'horaris, torns, vacances disponibles, bossa d'hores, etc.
+Respon amb dades concretes.
+
+**Nivell 2 — Actues amb autonomia, confirmant abans**
+Canvis de torn, intercanvis, moure hores.
+Explica la proposta (abans → després), demana confirmació explícita ("sí" / "no") i només després l'apliques.
+Conserva sempre el color/rol original del torn.
+
+**Nivell 3 — Escales a l'encarregat (Ruben)**
+Baixes, conflictes, canvis de contracte, vacances llargues en temporada alta, qualsevol cosa que trenqui cobertura mínima o no puguis justificar amb dades.
+Explica per què ho escales i deixa constància.
+
+**Regla d'or:** davant el dubte, no decideixis. Explica-ho i escala.
+
+### Context del negoci
+- Cocteleria de rooftop, estacional, torns nocturns (sovint fins de matinada).
+- Dos fronts: Barra i Sala. Cal mantenir l'equilibri.
+- Temporades: Baixa (H1), Mitjana (H2), Alta (H3).
+
+### Coneixement bàsic actual
+- Vacances: 31 dies naturals a l'any. Sol·licitar amb mínim 15 dies d'antelació.
+- Canvi de torn: avisar amb 48 hores i aprovació del responsable.
+- Nòmines: es paguen el dia 1 de cada mes.
+- Contractes: indefinits llevat que s'indiqui el contrari.
+
+### Estil de resposta
+- Natural, no robòtic.
+- Quan proposis un canvi, mostra sempre:
+  - Persona
+  - Dia
+  - Hora antiga → hora nova
+  - Pregunta de confirmació clara
+- Quan diguis que no, explica el motiu i ofereix el següent pas.
+- Tanca sempre el bucle: la persona ha de saber què passa després.
 """
 
 user_history = {}
@@ -51,11 +89,11 @@ def get_square_shifts(days=7):
     headers = get_headers()
     loc_r = requests.get(f"{SQUARE_BASE}/locations", headers=headers)
     if loc_r.status_code != 200:
-        return f"Error locations: {loc_r.text[:200]}"
+        return f"Error consultant ubicacions: {loc_r.status_code}"
 
     locations = loc_r.json().get("locations", [])
     if not locations:
-        return "No he trobat ubicacions."
+        return "No he trobat ubicacions a Square."
 
     location_ids = [loc["id"] for loc in locations]
     now = datetime.now(timezone.utc)
@@ -88,7 +126,7 @@ def get_square_shifts(days=7):
         lines.append(f"• {start_at} → {end_at}")
 
     if len(shifts) > 12:
-        lines.append(f"\n... i {len(shifts)-12} més.")
+        lines.append(f"\n... i {len(shifts) - 12} més.")
     return "\n".join(lines)
 
 def find_team_member(name):
@@ -109,7 +147,6 @@ def find_team_member(name):
     return None, None
 
 def get_date_from_day(day_name):
-    """Converteix 'dijous', 'divendres'... a data YYYY-MM-DD de la setmana actual o següent"""
     days_map = {
         "dilluns": 0, "dimarts": 1, "dimecres": 2, "dijous": 3,
         "divendres": 4, "dissabte": 5, "diumenge": 6
@@ -146,7 +183,7 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
 
     r = requests.post(f"{SQUARE_BASE}/labor/scheduled-shifts/search", headers=headers, json=body)
     if r.status_code != 200:
-        return None, f"Error buscant el torn: {r.text[:200]}"
+        return None, f"Error buscant el torn: {r.status_code}"
 
     shifts = r.json().get("scheduled_shifts", [])
     if not shifts:
@@ -154,8 +191,6 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
 
     shift = shifts[0]
     details = shift.get("published_shift_details") or shift.get("draft_shift_details") or {}
-    old_start = details.get("start_at")
-    old_end = details.get("end_at")
 
     new_start = f"{date_str}T{new_start_hour:02d}:00:00+02:00"
     new_end = f"{date_str}T{new_end_hour:02d}:00:00+02:00"
@@ -165,9 +200,9 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
         "team_member_id": team_member_id,
         "location_id": details.get("location_id"),
         "job_id": details.get("job_id"),
-        "old_start": old_start,
+        "old_start": details.get("start_at"),
         "new_start": new_start,
-        "old_end": old_end,
+        "old_end": details.get("end_at"),
         "new_end": new_end,
         "version": details.get("version", 1),
         "name": real_name,
@@ -197,7 +232,7 @@ def apply_and_publish(change):
         json=update_body
     )
     if r.status_code not in [200, 201]:
-        return f"Error actualitzant: {r.status_code}\n{r.text[:300]}"
+        return f"Error actualitzant el torn: {r.status_code}"
 
     pub_r = requests.post(
         f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}/publish",
@@ -205,7 +240,7 @@ def apply_and_publish(change):
         json={}
     )
     if pub_r.status_code not in [200, 201]:
-        return f"Actualitzat però no s'ha pogut publicar. Error: {pub_r.status_code}"
+        return f"He actualitzat el torn però no l'he pogut publicar (error {pub_r.status_code})."
 
     return (
         f"✅ Canvi aplicat i publicat.\n\n"
@@ -234,33 +269,33 @@ def handle_dm(event, say, logger):
 
     lower = text.lower()
 
-    # Confirmació
+    # Confirmació de canvi pendent
     if user_id in pending_changes:
         if any(w in lower for w in ["sí", "si", "confirma", "ok", "d'acord", "aplica", "endavant"]):
             result = apply_and_publish(pending_changes[user_id])
             del pending_changes[user_id]
             say(result)
             return
-        if any(w in lower for w in ["no", "cancel", "cancel·la"]):
+        if any(w in lower for w in ["no", "cancel", "cancel·la", "cancela"]):
             del pending_changes[user_id]
             say("Canvi cancel·lat.")
             return
 
-    # Detecció de petició de canvi
-    change_words = ["canviar", "canvia", "modificar", "modifica", "avançar", "avança", "posar", "voldria"]
+    # Detecció de petició de canvi (Nivell 2)
+    change_words = ["canviar", "canvia", "modificar", "modifica", "avançar", "avança", "posar", "voldria canviar"]
     if any(w in lower for w in change_words):
-        # Busquem nom
+        # Nom (simplificat)
         name = None
-        for possible in ["inma martin", "inma", "ruben", "marc", "anna", "pau"]:
+        for possible in ["inma martin", "inma", "ruben", "marc", "anna", "pau", "alan"]:
             if possible in lower:
                 name = possible
                 break
 
         if not name:
-            say("Per canviar un torn necessito saber **de qui** és.\nExemple: «Canvia el torn d'Inma Martin del dijous a 9h-13h»")
+            say("Per canviar un torn necessito saber de qui és.\nExemple: «Canvia el torn d'Inma Martin del dijous a 9h-13h»")
             return
 
-        # Busquem dia
+        # Dia
         date_str = None
         for day in ["dilluns", "dimarts", "dimecres", "dijous", "divendres", "dissabte", "diumenge"]:
             if day in lower:
@@ -268,17 +303,16 @@ def handle_dm(event, say, logger):
                 break
 
         if not date_str:
-            # Prova amb número de dia
             day_match = re.search(r"del?\s*(\d{1,2})", lower)
             if day_match:
                 day = int(day_match.group(1))
                 date_str = f"2026-08-{day:02d}"
 
         if not date_str:
-            say("No he entès el dia. Digues el dia de la setmana o la data.")
+            say("No he entès el dia. Digues el dia de la setmana o la data (ex: dijous o 26).")
             return
 
-        # Busquem hores (format 9h, 13h, 9:00, etc.)
+        # Hores
         hours = re.findall(r"(\d{1,2})\s*h", lower)
         if len(hours) >= 2:
             new_start = int(hours[0])
@@ -294,7 +328,7 @@ def handle_dm(event, say, logger):
 
         pending_changes[user_id] = change
         say(
-            f"Proposta de canvi:\n\n"
+            f"Proposta de canvi (Nivell 2):\n\n"
             f"**{change['name']}** – {change['date']}\n"
             f"Abans: {change['old_start'][11:16]} → {change['old_end'][11:16]}\n"
             f"Ara:   {change['new_start'][11:16]} → {change['new_end'][11:16]}\n\n"
@@ -302,26 +336,26 @@ def handle_dm(event, say, logger):
         )
         return
 
-    # Consulta de torns
-    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns"]):
+    # Consulta de torns (Nivell 1)
+    if any(w in lower for w in ["torn", "horari", "treballo", "quan treball", "quin dia", "torns", "quins torns"]):
         result = get_square_shifts()
         say(result)
         return
 
-    # Resposta normal
+    # Resta → Grok amb el system prompt complet
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
         response = client.chat.completions.create(
             model="grok-4.6",
             messages=messages,
-            temperature=0.2
+            temperature=0.3
         )
         answer = response.choices[0].message.content
         user_history[user_id].append({"role": "assistant", "content": answer})
         say(answer)
     except Exception as e:
         logger.error(f"Error: {e}")
-        say("Ho sento, he tingut un problema tècnic.")
+        say("Ho sento, he tingut un problema tècnic. Prova-ho de nou d'aquí uns minuts.")
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, os.environ.get("SLACK_APP_TOKEN"))
