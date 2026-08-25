@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -15,10 +16,6 @@ client = OpenAI(
 
 SQUARE_TOKEN = os.environ.get("SQUARE_ACCESS_TOKEN")
 SQUARE_BASE = "https://connect.squareup.com/v2"
-
-# ============================================================
-# SYSTEM PROMPT — Assistent de Torns · La Terrassa de l'Ultonia
-# ============================================================
 
 SYSTEM_PROMPT = """
 Ets l'Assistent de Torns de La Terrassa de l'Ultonia, la cocteleria del rooftop de l'Hotel Ultonia a Girona.
@@ -42,7 +39,7 @@ Respon amb dades concretes.
 **Nivell 2 — Actues amb autonomia, confirmant abans**
 Canvis de torn, intercanvis, moure hores.
 Explica la proposta (abans → després), demana confirmació explícita ("sí" / "no") i només després l'apliques.
-Conserva sempre el color/rol original del torn.
+Conserva sempre el color/rol original del torn (job_id).
 
 **Nivell 3 — Escales a l'encarregat (Ruben)**
 Baixes, conflictes, canvis de contracte, vacances llargues en temporada alta, qualsevol cosa que trenqui cobertura mínima o no puguis justificar amb dades.
@@ -213,14 +210,12 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
 def apply_and_publish(change):
     headers = get_headers()
 
-    # Seguretat: job_id obligatori per conservar el color
     if not change.get("job_id"):
         return (
             "No puc aplicar el canvi perquè el torn no té job_id (rol).\n"
             "Sense això es perdria el color. Escalo a l'encarregat."
         )
 
-    # 1. Actualitzar el draft
     update_body = {
         "scheduled_shift": {
             "draft_shift_details": {
@@ -235,6 +230,41 @@ def apply_and_publish(change):
     }
 
     r = requests.put(
+        f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}",
+        headers=headers,
+        json=update_body
+    )
+
+    if r.status_code not in [200, 201]:
+        return f"Error actualitzant el torn: {r.status_code}\n{r.text[:300]}"
+
+    updated_shift = r.json().get("scheduled_shift", {})
+    new_version = updated_shift.get("version", change["version"])
+
+    pub_body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "version": new_version
+    }
+
+    pub_r = requests.post(
+        f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}/publish",
+        headers=headers,
+        json=pub_body
+    )
+
+    if pub_r.status_code not in [200, 201]:
+        return (
+            f"He actualitzat el torn però no l'he pogut publicar (error {pub_r.status_code}).\n"
+            f"job_id conservat: {change['job_id']}"
+        )
+
+    return (
+        f"✅ Canvi aplicat i publicat correctament.\n\n"
+        f"**{change['name']}** – {change['date']}\n"
+        f"Abans: {change['old_start'][11:16]} → {change['old_end'][11:16]}\n"
+        f"Ara:   {change['new_start'][11:16]} → {change['new_end'][11:16]}\n"
+        f"Color conservat (job_id: {change['job_id']})"
+    )
 
 @app.event("message")
 def handle_dm(event, say, logger):
@@ -270,7 +300,6 @@ def handle_dm(event, say, logger):
     # Detecció de petició de canvi (Nivell 2)
     change_words = ["canviar", "canvia", "modificar", "modifica", "avançar", "avança", "posar", "voldria canviar"]
     if any(w in lower for w in change_words):
-        # Nom (simplificat)
         name = None
         for possible in ["inma martin", "inma", "ruben", "marc", "anna", "pau", "alan"]:
             if possible in lower:
@@ -281,7 +310,6 @@ def handle_dm(event, say, logger):
             say("Per canviar un torn necessito saber de qui és.\nExemple: «Canvia el torn d'Inma Martin del dijous a 9h-13h»")
             return
 
-        # Dia
         date_str = None
         for day in ["dilluns", "dimarts", "dimecres", "dijous", "divendres", "dissabte", "diumenge"]:
             if day in lower:
@@ -298,7 +326,6 @@ def handle_dm(event, say, logger):
             say("No he entès el dia. Digues el dia de la setmana o la data (ex: dijous o 26).")
             return
 
-        # Hores
         hours = re.findall(r"(\d{1,2})\s*h", lower)
         if len(hours) >= 2:
             new_start = int(hours[0])
@@ -328,7 +355,7 @@ def handle_dm(event, say, logger):
         say(result)
         return
 
-    # Resta → Grok amb el system prompt complet
+    # Resta → Grok
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + user_history[user_id]
         response = client.chat.completions.create(
