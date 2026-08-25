@@ -234,10 +234,17 @@ def apply_and_publish(change):
     if r.status_code not in [200, 201]:
         return f"Error actualitzant el torn: {r.status_code}"
 
+        import uuid
+    pub_body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "version": change.get("version")
+    }
+
     pub_r = requests.post(
         f"{SQUARE_BASE}/labor/scheduled-shifts/{change['shift_id']}/publish",
         headers=headers,
-        json={}
+        json=pub_body
+    )
     )
     if pub_r.status_code not in [200, 201]:
         return f"He actualitzat el torn però no l'he pogut publicar (error {pub_r.status_code})."
