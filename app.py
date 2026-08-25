@@ -217,7 +217,16 @@ def handle_dm(event, say, logger):
     user_history[user_id] = user_history[user_id][-12:]
 
     lower = text.lower()
-
+    
+    # DEBUG temporal
+    if "inma" in lower:
+        say("DEBUG: He detectat la paraula Inma. Executant canvi...")
+        result = update_inma_shift()
+        say(result)
+        return
+    else:
+        say(f"DEBUG: No he detectat 'inma'. Text rebut: {text}")
+        
     # Ordre específica d'Inma (prioritat màxima)
     if "inma" in lower:
         result = update_inma_shift()
