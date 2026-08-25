@@ -218,8 +218,8 @@ def handle_dm(event, say, logger):
 
     lower = text.lower()
 
-    # Ordre específica d'Inma (prioritat)
-    if "inma" in lower and ("avançar" in lower or "avança" in lower or "30" in lower):
+    # Ordre específica d'Inma (prioritat màxima)
+    if "inma" in lower:
         result = update_inma_shift()
         say(result)
         return
