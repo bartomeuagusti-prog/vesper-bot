@@ -25,9 +25,12 @@ Ets Vesper, l'assistent intern de torns de La Terrassa de l'Ultonia
 Parles només per DM privat de Slack. Respon en català, curt, clar i humà.
 Una idea per missatge. Hores en format 17:30 / 02:30.
 
-Pots: consultar horaris reals de Square, proposar canvis de torn i
-escalar a Ruben. Mai inventis hores. Mai aplicis un canvi sense un
+Pots: consultar planning i fitxatges reals de Square, dir si algú
+ha entrat tard o aviat, proposar canvis de torn i escalar a Ruben.
+Mai inventis hores ni fitxatges. Mai aplicis un canvi sense un
 «sí» explícit a la proposta d'aquest fil.
+Puntualitat: compares hora planificada vs hora de fitxatge.
+Marge de cortesia: 5 minuts.
 
 Coneixement fix:
 - Vacances: 31 dies naturals, preavís 15 dies.
@@ -45,7 +48,7 @@ Respon NOMÉS un JSON vàlid, sense markdown ni text extra.
 
 Esquema:
 {
-  "intent": "consulta_llista" | "consulta_persona" | "proposta" | "confirmar" | "cancelar" | "escalar" | "xerrada",
+  "intent": "consulta_llista" | "consulta_persona" | "consulta_fitxatge" | "proposta" | "confirmar" | "cancelar" | "escalar" | "xerrada",
   "persona": string o null,
   "dia_setmana": "dilluns"|"dimarts"|"dimecres"|"dijous"|"divendres"|"dissabte"|"diumenge"|null,
   "data": "YYYY-MM-DD" o null,
@@ -59,7 +62,9 @@ Esquema:
 Regles:
 - "Quins torns hi ha", "horaris de la setmana", "qui treballa" sense persona → consulta_llista
 - "Quin torn tinc/té X", "a quina hora entra/plega X", un dia concret d'algú → consulta_persona
+- "Ha fet tard", "va fitxar", "a quina hora ha entrat de veritat", "puntualitat", "registres horaris" → consulta_fitxatge
 - Canviar, avançar, retardar, posar de Xh a Yh, moure entrada/sortida → proposta
+- avui / ahir / demà: omple data amb la data real (avui és 2026-08-29)
 - sí, si, ok, confirma, d'acord, aplica, endavant → confirmar
 - no, cancel·la, cancela → cancelar
 - sou, nòmina detallada, contracte, baixa, conflicte, vacances llargues → escalar
@@ -151,6 +156,13 @@ def date_from_day(day_name):
 def resolve_date(data, dia_setmana):
     if data and re.match(r"\d{4}-\d{2}-\d{2}", data):
         return data
+    today = datetime.now().date()
+    if data in ("avui", "hoy"):
+        return today.strftime("%Y-%m-%d")
+    if data in ("ahir", "ayer"):
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    if data in ("demà", "dema", "mañana"):
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
     return date_from_day(dia_setmana)
 
 
@@ -213,6 +225,93 @@ def get_person_shifts(team_id, name, date_str):
     for s in shifts:
         d = shift_details(s)
         lines.append(f"• {hhmm(d.get('start_at'))} → {hhmm(d.get('end_at'))}")
+    return "\n".join(lines)
+
+
+GRACE_MINUTES = 5
+
+
+def parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def search_timecards(date_str, team_member_id):
+    headers = get_headers()
+    body = {
+        "query": {
+            "filter": {
+                "team_member_ids": [team_member_id],
+                "start": {
+                    "start_at": f"{date_str}T00:00:00+02:00",
+                    "end_at": f"{date_str}T23:59:59+02:00"
+                }
+            }
+        },
+        "limit": 50
+    }
+    r = requests.post(f"{SQUARE_BASE}/labor/timecards/search", headers=headers, json=body)
+    if r.status_code == 200:
+        return r.json().get("timecards") or r.json().get("shifts") or [], None
+    # Fallback al endpoint antic de shifts
+    r2 = requests.post(f"{SQUARE_BASE}/labor/shifts/search", headers=headers, json=body)
+    if r2.status_code == 200:
+        return r2.json().get("shifts") or [], None
+    return None, f"Error consultant fitxatges: {r.status_code}\n{r.text[:200]}"
+
+
+def punctuality_report(team_id, name, date_str):
+    start = f"{date_str}T00:00:00+02:00"
+    end = f"{date_str}T23:59:59+02:00"
+    planned, err = search_shifts(start, end, team_id)
+    if err:
+        return err
+    punches, perr = search_timecards(date_str, team_id)
+    if perr:
+        return perr
+
+    if not planned and not punches:
+        return f"No hi ha ni planning ni fitxatge de {name} el {date_str}."
+
+    lines = [f"Puntualitat de {name} el {date_str}:"]
+
+    planned_start = None
+    if planned:
+        d = shift_details(planned[0])
+        planned_start = parse_dt(d.get("start_at"))
+        lines.append(f"Planificat: {hhmm(d.get('start_at'))} → {hhmm(d.get('end_at'))}")
+    else:
+        lines.append("No hi ha torn planificat aquest dia.")
+
+    if not punches:
+        lines.append("No hi ha cap fitxatge registrat.")
+        return "\n".join(lines)
+
+    punch = punches[0]
+    clock_in = punch.get("start_at")
+    clock_out = punch.get("end_at")
+    status = punch.get("status", "")
+    lines.append(f"Fitxatge: {hhmm(clock_in) or '—'} → {hhmm(clock_out) or 'encara obert'}")
+    if status:
+        lines.append(f"Estat: {status}")
+
+    actual_start = parse_dt(clock_in)
+    if planned_start and actual_start:
+        # Compara en minuts, ignorant tz incompatibles convertint a naive-equivalent via timestamp
+        delta = int((actual_start - planned_start).total_seconds() / 60)
+        if abs(delta) <= GRACE_MINUTES:
+            lines.append(f"Puntual (marge de {GRACE_MINUTES} min).")
+        elif delta > 0:
+            lines.append(f"Ha entrat {delta} minuts tard.")
+        else:
+            lines.append(f"Ha entrat {abs(delta)} minuts abans.")
+    elif not planned_start:
+        lines.append("Sense hora planificada no puc dir si ha fet tard.")
+
     return "\n".join(lines)
 
 
@@ -397,20 +496,27 @@ def handle_intent(user_id, text, data):
     persona = data.get("persona")
     date_str = resolve_date(data.get("data"), data.get("dia_setmana"))
 
-    if intent in ("consulta_persona", "proposta"):
+    if intent in ("consulta_persona", "consulta_fitxatge", "proposta"):
         tid, resolved = resolve_name(persona, team_names)
         if resolved == "JO":
-            return "Encara no tinc vinculat el teu usuari de Slack amb la plantilla. Digues el teu nom i ho miro."
+            return "Encara no tinc vinculat el teu usuari de Slack amb la plantilla. Digues el nom i ho miro."
         if resolved and str(resolved).startswith("VARIS:"):
             return f"He trobat més d'una persona. Qui exactament? {resolved[6:]}"
         if not tid:
             if intent == "consulta_persona":
                 return "De qui vols consultar el torn? Digues el nom."
+            if intent == "consulta_fitxatge":
+                return "De qui vols consultar el fitxatge? Digues el nom."
             return "Per canviar un torn necessito el nom. Exemple: «Canvia el torn d'Inma Martin del dimarts a 15:00-19:00»"
         if not date_str:
-            return "Quin dia? Digues el dia de la setmana o la data."
+            if intent == "consulta_fitxatge":
+                date_str = datetime.now().date().strftime("%Y-%m-%d")
+            else:
+                return "Quin dia? Digues el dia de la setmana o la data."
         if intent == "consulta_persona":
             return get_person_shifts(tid, resolved, date_str)
+        if intent == "consulta_fitxatge":
+            return punctuality_report(tid, resolved, date_str)
 
         accio = data.get("accio") or "posar_hores"
         change, err = propose_change(
