@@ -79,6 +79,20 @@ def get_headers():
         "Square-Version": "2025-05-21"
     }
 
+def get_team_map():
+    headers = get_headers()
+    r = requests.post(
+        f"{SQUARE_BASE}/team-members/search",
+        headers=headers,
+        json={"query": {"filter": {"status": "ACTIVE"}}, "limit": 200}
+    )
+    names = {}
+    if r.status_code == 200:
+        for m in r.json().get("team_members", []):
+            full = f"{m.get('given_name', '')} {m.get('family_name', '')}".strip()
+            names[m["id"]] = full or m["id"]
+    return names
+
 def get_square_shifts(days=7):
     if not SQUARE_TOKEN:
         return "No tinc el token de Square configurat."
@@ -93,6 +107,8 @@ def get_square_shifts(days=7):
         return "No he trobat ubicacions a Square."
 
     location_ids = [loc["id"] for loc in locations]
+    team_names = get_team_map()
+
     now = datetime.now(timezone.utc)
     start = now.isoformat().replace("+00:00", "Z")
     end = (now + timedelta(days=days)).isoformat().replace("+00:00", "Z")
@@ -116,16 +132,17 @@ def get_square_shifts(days=7):
         return "No he trobat torns programats per als propers dies."
 
     lines = [f"He trobat {len(shifts)} torns els propers {days} dies:\n"]
-    for s in shifts[:12]:
+    for s in shifts[:15]:
         details = s.get("published_shift_details") or s.get("draft_shift_details") or {}
         start_at = details.get("start_at", "")[:16].replace("T", " ")
         end_at = details.get("end_at", "")[:16].replace("T", " ")
-        lines.append(f"• {start_at} → {end_at}")
+        tm_id = details.get("team_member_id")
+        name = team_names.get(tm_id, "Sense assignar")
+        lines.append(f"• {name}: {start_at} → {end_at}")
 
-    if len(shifts) > 12:
-        lines.append(f"\n... i {len(shifts) - 12} més.")
+    if len(shifts) > 15:
+        lines.append(f"\n... i {len(shifts) - 15} més.")
     return "\n".join(lines)
-
 def find_team_member(name):
     headers = get_headers()
     r = requests.post(
