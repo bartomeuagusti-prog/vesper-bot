@@ -143,6 +143,7 @@ def get_square_shifts(days=7):
     if len(shifts) > 15:
         lines.append(f"\n... i {len(shifts) - 15} més.")
     return "\n".join(lines)
+
 def find_team_member(name):
     headers = get_headers()
     r = requests.post(
@@ -218,7 +219,7 @@ def propose_change(name, date_str, new_start_hour, new_end_hour):
         "new_start": new_start,
         "old_end": details.get("end_at"),
         "new_end": new_end,
-        "version": details.get("version", 1),
+        "version": shift.get("version", 1),
         "name": real_name,
         "date": date_str
     }
